@@ -25,18 +25,19 @@ import (
 	"github.com/yorkie-team/yorkie/pkg/types"
 )
 
-type Event struct {
-	Type  types.EventType
-	Value string
+type DocEvent struct {
+	Type    types.EventType
+	DocKey  string
+	ActorID *time.ActorID
 }
 
 type Subscription struct {
 	id     string
 	actor  *time.ActorID
-	events chan Event
+	events chan DocEvent
 }
 
-func (s *Subscription) Events() <-chan Event {
+func (s *Subscription) Events() <-chan DocEvent {
 	return s.events
 }
 
@@ -48,7 +49,7 @@ func newSubscription(actor *time.ActorID) *Subscription {
 	return &Subscription{
 		id:     uuid.New().String(),
 		actor:  actor,
-		events: make(chan Event),
+		events: make(chan DocEvent),
 	}
 }
 
@@ -62,7 +63,7 @@ type PubSub struct {
 	subscriptionsMap map[string]Subscriptions
 }
 
-func NewPubSub() *PubSub {
+func New() *PubSub {
 	return &PubSub{
 		mu:               &sync.RWMutex{},
 		subscriptionsMap: make(map[string]Subscriptions),
@@ -102,7 +103,7 @@ func (m *PubSub) Unsubscribe(topics []string, subscription *Subscription) {
 }
 
 // Publish publishes the given event to the given topic.
-func (m *PubSub) Publish(actor *time.ActorID, topic string, event Event) {
+func (m *PubSub) Publish(actor *time.ActorID, topic string, event DocEvent) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 

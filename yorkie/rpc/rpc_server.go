@@ -160,11 +160,11 @@ func (s *Server) AttachDocument(
 
 	// if pack.HasChanges() {
 	lockKey := fmt.Sprintf("pushpull-%s", pack.DocumentKey.BSONKey())
-	if err := s.backend.Lock(lockKey); err != nil {
+	if err := s.backend.MutexMap.Lock(lockKey); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer func() {
-		if err := s.backend.Unlock(lockKey); err != nil {
+		if err := s.backend.MutexMap.Unlock(lockKey); err != nil {
 			log.Logger.Error(err)
 		}
 	}()
@@ -208,11 +208,11 @@ func (s *Server) DetachDocument(
 
 	// if pack.HasChanges() {
 	lockKey := fmt.Sprintf("pushpull-%s", pack.DocumentKey.BSONKey())
-	if err := s.backend.Lock(lockKey); err != nil {
+	if err := s.backend.MutexMap.Lock(lockKey); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer func() {
-		if err := s.backend.Unlock(lockKey); err != nil {
+		if err := s.backend.MutexMap.Unlock(lockKey); err != nil {
 			log.Logger.Error(err)
 		}
 	}()
@@ -257,11 +257,11 @@ func (s *Server) PushPull(
 	// TODO uncomment write lock condition. We need $max operation on client.
 	// if pack.HasChanges() {
 	lockKey := fmt.Sprintf("pushpull-%s", pack.DocumentKey.BSONKey())
-	if err := s.backend.Lock(lockKey); err != nil {
+	if err := s.backend.MutexMap.Lock(lockKey); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer func() {
-		if err := s.backend.Unlock(lockKey); err != nil {
+		if err := s.backend.MutexMap.Unlock(lockKey); err != nil {
 			log.Logger.Error(err)
 		}
 	}()
@@ -306,13 +306,18 @@ func (s *Server) WatchDocuments(
 		return err
 	}
 
+	// TODO create peersMap
+	peersMap := map[string]*api.Clients{}
+
 	if err := stream.Send(&api.WatchDocumentsResponse{
-		Body: &api.WatchDocumentsResponse_State_{
-			State: api.WatchDocumentsResponse_Started,
+		Body: &api.WatchDocumentsResponse_Initialization_{
+			Initialization: &api.WatchDocumentsResponse_Initialization{
+				PeersMapByDoc: peersMap,
+			},
 		},
 	}); err != nil {
-		s.unwatchDocs(docKeys, subscription)
 		log.Logger.Error(err)
+		s.unwatchDocs(docKeys, subscription)
 		return err
 	}
 
@@ -322,7 +327,7 @@ func (s *Server) WatchDocuments(
 			s.unwatchDocs(docKeys, subscription)
 			return nil
 		case event := <-subscription.Events():
-			k, err := key.FromBSONKey(event.Value)
+			k, err := key.FromBSONKey(event.DocKey)
 			if err != nil {
 				log.Logger.Error(err)
 				s.unwatchDocs(docKeys, subscription)
@@ -332,7 +337,7 @@ func (s *Server) WatchDocuments(
 			if err := stream.Send(&api.WatchDocumentsResponse{
 				Body: &api.WatchDocumentsResponse_Event_{
 					Event: &api.WatchDocumentsResponse_Event{
-						ClientId:     req.ClientId,
+						ClientId:     event.ActorID.String(),
 						EventType:    converter.ToEventType(event.Type),
 						DocumentKeys: converter.ToDocumentKeys(k),
 					},
@@ -365,7 +370,7 @@ func (s *Server) listenAndServeGRPC() error {
 }
 
 func (s *Server) watchDocs(clientID string, docKeys []string) (*pubsub.Subscription, error) {
-	subscription, err := s.backend.Subscribe(
+	subscription, err := s.backend.PubSub.Subscribe(
 		time.ActorIDFromHex(clientID),
 		docKeys,
 	)
@@ -375,12 +380,13 @@ func (s *Server) watchDocs(clientID string, docKeys []string) (*pubsub.Subscript
 	}
 
 	for _, docKey := range docKeys {
-		s.backend.Publish(
+		s.backend.PubSub.Publish(
 			subscription.Actor(),
 			docKey,
-			pubsub.Event{
-				Type:  pkgTypes.DocumentWatchedEvent,
-				Value: docKey,
+			pubsub.DocEvent{
+				Type:   pkgTypes.DocumentsWatchedEvent,
+				DocKey: docKey,
+				ActorID: subscription.Actor(),
 			},
 		)
 	}
@@ -389,15 +395,16 @@ func (s *Server) watchDocs(clientID string, docKeys []string) (*pubsub.Subscript
 }
 
 func (s *Server) unwatchDocs(docKeys []string, subscription *pubsub.Subscription) {
-	s.backend.Unsubscribe(docKeys, subscription)
+	s.backend.PubSub.Unsubscribe(docKeys, subscription)
 
 	for _, docKey := range docKeys {
-		s.backend.Publish(
+		s.backend.PubSub.Publish(
 			subscription.Actor(),
 			docKey,
-			pubsub.Event{
-				Type:  pkgTypes.DocumentUnwatchedEvent,
-				Value: docKey,
+			pubsub.DocEvent{
+				Type:   pkgTypes.DocumentsUnwatchedEvent,
+				DocKey: docKey,
+				ActorID: subscription.Actor(),
 			},
 		)
 	}
